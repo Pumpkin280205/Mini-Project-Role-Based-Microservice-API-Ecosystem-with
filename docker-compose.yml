@@ -1,0 +1,87 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    networks:
+      - broker-net
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  db-data:
+    image: alpine:3.20
+    volumes:
+      - app-data:/app/data
+    command: sh -c "mkdir -p /app/data && chmod 777 /app/data"
+
+  auth-service:
+    build: ./auth-service
+    environment:
+      - PORT=3001
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-me}
+    networks:
+      - auth-net
+    ports:
+      - "3001:3001"
+
+  transaction-service:
+    build: ./transaction-service
+    environment:
+      - PORT=3002
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-me}
+      - RABBIT_URL=amqp://rabbitmq:5672
+    volumes:
+      - app-data:/app/data
+    networks:
+      - txn-net
+      - broker-net
+    ports:
+      - "3002:3002"
+
+  worker:
+    build: ./worker
+    environment:
+      - RABBIT_URL=amqp://rabbitmq:5672
+    volumes:
+      - app-data:/app/data
+    networks:
+      - txn-net
+      - broker-net
+
+  api-gateway:
+    build: ./api-gateway
+    environment:
+      - PORT=3000
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-me}
+      - AUTH_URL=http://auth-service:3001
+      - TXN_URL=http://transaction-service:3002
+    networks:
+      - api-net
+      - auth-net
+      - txn-net
+    ports:
+      - "3000:3000"
+    depends_on:
+      - auth-service
+      - transaction-service
+
+  frontend:
+    image: nginx:alpine
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+    ports:
+      - "8080:80"
+    networks:
+      - frontend-net
+      - api-net
+    depends_on:
+      - api-gateway
+
+networks:
+  auth-net:
+  txn-net:
+  api-net:
+  broker-net:
+  frontend-net:
+
+volumes:
+  app-data:
