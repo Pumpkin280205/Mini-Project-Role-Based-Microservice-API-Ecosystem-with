@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RBAC Microservice — Frontend</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; color: #1f2937; }
+  h1 { font-size: 1.25rem; margin-bottom: 1rem; color: #111827; }
+  .card { border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem; background: #fff; }
+  .card h2 { font-size: 0.95rem; margin-top: 0; margin-bottom: 0.75rem; color: #374151; }
+  label { display: block; font-size: 0.875rem; font-weight: 500; margin-bottom: 0.25rem; color: #374151; }
+  input[type="text"], input[type="password"], input[type="number"], select { width: 100%; padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem; margin-bottom: 0.75rem; }
+  button { width: 100%; padding: 0.5rem 1rem; background: #2563eb; color: #fff; border: none; border-radius: 0.375rem; font-size: 1rem; font-weight: 500; cursor: pointer; margin-bottom: 0.5rem; }
+  button:hover { background: #1d4ed8; }
+  button.secondary { background: #6b7280; }
+  button.secondary:hover { background: #4b5563; }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  .token { font-family: ui-monospace, monospace; font-size: 0.75rem; background: #f3f4f6; padding: 0.5rem; border-radius: 0.375rem; word-break: break-all; margin-top: 0.5rem; }
+  .msg { font-size: 0.875rem; margin-top: 0.5rem; padding: 0.5rem; border-radius: 0.375rem; display: none; }
+  .msg.success { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+  .msg.error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.875rem; margin-top: 0.5rem; }
+  th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #e5e7eb; }
+  th { font-weight: 600; color: #374151; }
+  .role-badge { font-size: 0.75rem; padding: 0.125rem 0.5rem; border-radius: 999px; background: #e5e7eb; color: #374151; }
+  .row-processed { color: #166534; }
+  .row-queued { color: #92400e; }
+  .hidden { display: none; }
+  .nav { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+  .nav button { width: auto; }
+</style>
+</head>
+<body>
+
+<h1>RBAC Microservice</h1>
+<p>API gateway: <code>http://localhost:3000</code></p>
+
+<div class="nav">
+  <button class="secondary" onclick="show('auth')">Auth</button>
+  <button class="secondary hidden" id="btnTxn" onclick="show('txn')">Transactions</button>
+  <button class="secondary hidden" id="btnLogout" onclick="logout()">Logout</button>
+</div>
+
+<!-- Auth section -->
+<div id="auth" class="card">
+  <h2>Sign in / Register</h2>
+  <div id="msg-auth" class="msg"></div>
+  <div>
+    <label>Username</label>
+    <input type="text" id="regUser" placeholder="alice">
+    <label>Password</label>
+    <input type="password" id="regPass" placeholder="••••••••">
+    <label>Role</label>
+    <select id="regRole"><option>customer</option><option>manager</option><option>admin</option></select>
+    <button onclick="register()">Register</button>
+  </div>
+  <hr style="margin: 1rem 0; border: none; border-top: 1px solid #e5e7eb;">
+  <div>
+    <label>Username</label>
+    <input type="text" id="loginUser" placeholder="alice">
+    <label>Password</label>
+    <input type="password" id="loginPass" placeholder="••••••••">
+    <button onclick="login()">Login</button>
+  </div>
+  <div id="tokenBox" class="hidden token"></div>
+</div>
+
+<!-- Transactions section -->
+<div id="txn" class="card hidden">
+  <h2>Transactions</h2>
+  <div id="msg-txn" class="msg"></div>
+  <div>
+    <label>Amount</label>
+    <input type="number" id="txnAmount" step="0.01" placeholder="42.50">
+    <label>Currency</label>
+    <select id="txnCurrency"><option>USD</option><option>EUR</option><option>GBP</option></select>
+    <label>Note</label>
+    <input type="text" id="txnNote" placeholder="Optional note">
+    <button onclick="submitTxn()">Submit Transaction (async → 202)</button>
+  </div>
+  <div id="txnList"></div>
+  <button class="secondary" onclick="loadTxns()">Refresh list</button>
+</div>
+
+<script>
+const GATEWAY = 'http://localhost:3000';
+let token = null;
+
+function show(section) {
+  document.getElementById('auth').classList.add('hidden');
+  document.getElementById('txn').classList.add('hidden');
+  document.getElementById(section).classList.remove('hidden');
+  document.getElementById('btnTxn').classList.toggle('hidden', section !== 'txn');
+  document.getElementById('btnLogout').classList.toggle('hidden', !token);
+  if (section === 'txn') loadTxns();
+}
+
+function setMsg(id, text, kind) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'msg ' + kind;
+  el.style.display = text ? 'block' : 'none';
+}
+
+async function api(path, method, body) {
+  const opts = { method, headers: {} };
+  if (token) opts.headers.Authorization = 'Bearer ' + token;
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const res = await fetch(GATEWAY + path, opts);
+  let data;
+  try { data = await res.json(); } catch { data = {}; }
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function register() {
+  try {
+    const data = await api('/auth/register', 'POST', {
+      username: document.getElementById('regUser').value,
+      password: document.getElementById('regPass').value,
+      role: document.getElementById('regRole').value,
+    });
+    setMsg('msg-auth', 'Registered. Please log in.', 'success');
+  } catch (e) { setMsg('msg-auth', e.message, 'error'); }
+}
+
+async function login() {
+  try {
+    const data = await api('/auth/login', 'POST', {
+      username: document.getElementById('loginUser').value,
+      password: document.getElementById('loginPass').value,
+    });
+    token = data.token;
+    document.getElementById('tokenBox').classList.remove('hidden');
+    document.getElementById('tokenBox').textContent = 'JWT: ' + token;
+    show('txn');
+  } catch (e) { setMsg('msg-auth', e.message, 'error'); }
+}
+
+function logout() { token = null; show('auth'); }
+
+async function submitTxn() {
+  try {
+    const data = await api('/transactions', 'POST', {
+      amount: Number(document.getElementById('txnAmount').value),
+      currency: document.getElementById('txnCurrency').value,
+      note: document.getElementById('txnNote').value,
+    });
+    setMsg('msg-txn', 'Accepted (202) — queued for async processing.', 'success');
+    document.getElementById('txnAmount').value = '';
+    document.getElementById('txnNote').value = '';
+    setTimeout(loadTxns, 3000);
+  } catch (e) { setMsg('msg-txn', e.message, 'error'); }
+}
+
+async function loadTxns() {
+  try {
+    const list = await api('/transactions', 'GET');
+    const tbody = list.map(t => `
+      <tr>
+        <td>${t.id}</td>
+        <td>${t.user}</td>
+        <td>$${t.amount} ${t.currency}</td>
+        <td class="row-${t.status}">${t.status}</td>
+        <td>${t.note}</td>
+      </tr>
+    `).join('');
+    document.getElementById('txnList').innerHTML = `
+      <table>
+        <thead><tr><th>ID</th><th>User</th><th>Amount</th><th>Status</th><th>Note</th></tr></thead>
+        <tbody>${tbody}</tbody>
+      </table>`;
+  } catch (e) { setMsg('msg-txn', e.message, 'error'); }
+}
+</script>
+
+</body>
+</html>
